@@ -1,0 +1,4 @@
+cl65 -t atari -I ../include/ -T -l -vm --mapfile app.map app.c -o app.xex --start-addr $705
+BootableXEX app.xex
+BootableXEX -t app.xex
+ls -l app.xex app.atr app_test.atr

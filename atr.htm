@@ -1,0 +1,577 @@
+
+<!DOCTYPE html>
+<html>
+<title>ATR</title>
+<style>
+body {
+	background-color:#F8F8F8;
+	font-family:"Open Sans","Helvetica Neue",Helvetica;
+	padding: 20px;
+}
+h1, h2, h3, h4, h5, h6 {
+	font-weight: 300;
+}
+h2 {
+	font-size: 30px;
+}
+#gl {
+	border: solid 1px #C00;
+}
+
+
+td {
+	border: solid 8px #F8F8F8;
+	padding: 16px;
+	margin: 16px;
+	background: #23A;
+	color: #FFF;
+	font-weight: 500;
+}
+.sw {
+	background: #A32;
+}
+.hw {
+	background: #3A2;
+}
+</style>
+
+<script id="hdr" type="text/template">
+	<b>{{name}}</b> {{size}} {{sector_size}}
+	<hr/>
+	toc:<br/>{{toc}}<br/>
+</script>
+
+<script id="file" type="text/template">
+	<div class='file'><b onclick='show({{start}})'>{{name}}</b> ({{total}} sectors at {{start}})</div>
+</script>
+
+<script id="err" type="text/template">
+	error:<b>{{err}}</b>
+</script>
+
+<script id="pre" type="text/template">
+	<pre>{{pre}}</pre>
+</script>
+
+<script>
+var _ajax = function(m,u,c,d) {
+	var x = new XMLHttpRequest;
+	x.onreadystatechange=function(){x.readyState^4||c(this)};
+	x.open(m,u);
+	if (d) {
+		x.setRequestHeader('Content-Type', 'application/json');
+		d = JSON.stringify(d);
+	}
+	x.send(d);
+};
+
+var _q = function(q) {
+	return document.querySelector(q)
+};
+
+var _txt = function(q) {
+	return document.querySelector(q).innerText;
+};
+
+
+function _t(s,d)
+{
+	for(var p in d)
+		s=s.replace(new RegExp('{{'+p+'}}','g'), d[p]);
+	return s;
+}
+
+function _m(src,dst,obj)
+{
+	src = _q(src);
+	dst = _q(dst);
+	if (src && dst)
+		dst.innerHTML = _t(src.innerText,obj);
+}
+
+function vis(e,on)
+{
+	e.style.visibility = on ? "visible" : "hidden";
+	return on;
+}
+
+function stop()
+{
+	event.preventDefault();
+	event.stopPropagation();
+}
+
+function get(url,cb,d)
+{
+	_ajax(d ? "post":"get",url,function(r) {
+		var o = JSON.parse(r.responseText);
+		cb(JSON.parse(r.responseText));
+	},d);
+}
+
+function display(url,src,dst)
+{
+	get(url,function(o) {
+		_m(src,dst,o);
+	});
+}
+
+function repeat(tmpl,list)
+{
+	var tmpl = _q(tmpl).innerText;	// 
+	var s = [];
+	for (var i in list)
+		s.push(_t(tmpl,list[i]));
+	return s.join('');
+}
+
+function download(blob, filename)
+{
+    var url = (window.URL || window.webkitURL).createObjectURL(blob);
+    var link = window.document.createElement('a');
+    link.href = url;
+    link.download = filename || 'output.png';
+    var click = document.createEvent("Event");
+    click.initEvent("click", true, true);
+    link.dispatchEvent(click);
+}
+
+function toggle(el)
+{
+    el = _q(el);
+    el.style.display = (el.style.display != 'none' ? 'none' : '' );
+}
+
+var _hex = "0123456789ABCDEF";
+function hex(i,len)
+{
+	var s = '';
+	if (!len)
+		len = 2;
+	while(len--)
+		s += _hex[(i >> (len*4)) & 0xF];
+	return s;
+}
+
+function escapestr(c)
+{
+	switch (c) {
+		case "<": return "&lt;"
+		case ">": return "&gt;"
+	}
+	return c;
+}
+
+function esc(s)
+{
+	var n = '';
+	for (var i = 0; i < s.length; i++)
+		n+= escapestr(s.charAt(i));
+	return n;
+}
+
+function hex_line(addr,data,i,len)
+{
+	var s = [hex(addr,6) + " "];
+	var p = '';
+	while (len--) {
+		var j = data[i];
+		if (j >= 0x20 && j <= 0x7E)
+			p += escapestr(String.fromCharCode(j));
+		else
+			p += '.'
+		s.push(hex(data[i++],2) + " ");
+	}
+	return s.join('') + " " + p;
+}
+
+function hex_dump(a,i,len)
+{
+	var hex = [];
+	for (var j = 0; j < len; j += 16)
+		hex.push(hex_line(j,a,i+j,16));
+	return hex.join("\n");
+}
+//===================================================================================================
+//===================================================================================================
+//  Drag and drop
+
+function drop_init(el,onfile)
+{
+    function handleFileSelect(evt) {
+        evt.stopPropagation();
+        evt.preventDefault();
+
+        var files = evt.dataTransfer.files; // FileList object.
+        for (var i = 0, f; f = files[i]; i++) {
+            var reader = new FileReader();
+            reader.f = f;
+            reader.onload = (function(theFile) {
+                onfile(theFile.target.f,theFile.target.result);
+            });
+            reader.readAsArrayBuffer(f);
+        }
+    }
+
+    function handleDragOver(evt) {
+        evt.stopPropagation();
+        evt.preventDefault();
+        evt.dataTransfer.dropEffect = 'copy'; // Explicitly show this is a copy.
+    }
+    el.addEventListener('dragover', handleDragOver, false);
+    el.addEventListener('drop', handleFileSelect, false);
+}
+
+//===================================================================================================
+//===================================================================================================
+// http://www.atarimax.com/jindroush.atari.org/afmtbas.html
+// Disassemble atari basic
+
+var _basic_commands = [
+	"REM","DATA","INPUT","COLOR","LIST","ENTER","LET","IF","FOR","NEXT","GOTO",
+	"GO TO","GOSUB","TRAP","BYE","CONT","COM","CLOSE","CLR","DEG","DIM","END",
+	"NEW","OPEN","LOAD","SAVE","STATUS","NOTE","POINT","XIO","ON","POKE","PRINT",
+	"RAD","READ","RESTORE","RETURN","RUN","STOP","POP","?","GET","PUT","GRAPHICS",
+	"PLOT","POSITION","DOS","DRAWTO","SETCOLOR","LOCATE","SOUND","LPRINT","CSAVE",
+	"CLOAD","LET_","ERROR"
+];
+
+var _basic_operators = [
+	"_0","_1","_2","_3","_4","_5","_6","_7","_8","_9","_A","_B","_C","_D",
+	"NCONST","SCONST","NOUSE","NOUSE",",","$",":",";","EOL","GOTO","GOSUB"," TO ",
+	" STEP "," THEN ","#","<=","<>",">=","<",">","=","^","*","+","-","/"," NOT "," OR "," AND ",
+	"(",")","=","=","<=","<>",">=","<",">","=","+","-","(","(","(","(","(",",",
+	"STR$","CHR$","USR","ASC","VAL","LEN","ADR","ATN","COS","PEEK","SIN","RND","FRE",
+	"EXP","LOG","CLOG","SQR","SGN","ABS","INT","PADDLE","STICK","PTRIG","STRIG"
+];
+
+function ataribasic(a,i,len)
+{
+	var b = {
+		lomem: le16(a,i+0),
+		vnt: le16(a,i+2),
+		vnte: le16(a,i+4),
+		vvt: le16(a,i+6),
+		stmtab: le16(a,i+8),
+		stmcur: le16(a,i+10),
+		starp: le16(a,i+12),
+
+		variable_names:[],
+		variable_values:[],
+		statements:[]
+	}
+
+	var origin = b.vnt - b.lomem - 14; // file offsets are weird?
+	b.vnt -= origin;
+	b.vnte -= origin;
+	b.vvt -= origin;
+	b.stmtab -= origin;
+	b.stmcur -= origin;
+	b.starp -= origin;
+
+	function get_string(data,si,len) {
+		var s = '';
+		while (len--)
+			s += String.fromCharCode(data[si++]);
+		return s;
+	}
+
+	function bcd(data,bi)
+	{
+		var n = 0;
+		var e = data[bi++];
+		if (e == 0)
+			return 0;
+		for (var j = 0; j < 5; j++) {
+			var c = data[bi++];
+			n *= 10;
+			n += c >> 4;
+			n *= 10;
+			n += c & 0xF;
+		}
+		e = (e - 68) * 2;
+		return n*Math.pow(10,e);
+	}
+
+	var vnt_begin = i + b.vnt;
+	var vnt_end = i + b.vnte;
+	var n = '';
+	for (var j = vnt_begin; j < vnt_end; j++) {
+		n += String.fromCharCode(a[j]&0x7F);
+		if (a[j] & 0x80)
+		{
+			if (n.length && n[n.length-1] == '(')
+				n = n.substr(0,n.length-1);	// 
+			b.variable_names.push(n);
+			n = '';
+		}
+	}
+
+	var vvt_begin = i + b.vvt;	// NOT SURE WHY THESE ARE +1
+	var tokens_begin = i + b.stmtab;
+	for (var j = vvt_begin; j < tokens_begin; j += 8) {
+		var v= {
+			name:b.variable_names[a[j+1]]
+		}
+		var p0 = le16(a,j+2);
+		var p1 = le16(a,j+4);
+		var p2 = le16(a,j+6);
+		switch (a[j]) {
+			case 0x00:
+				v.type = "scalar";
+				v.value = bcd(a,j+2);
+				break;
+			case 0x40:
+			case 0x41:
+				v.type = "array";
+				break;
+			case 0x80:
+			case 0x81:
+				v.type = "string";
+				v.value = get_string(a,b.starp+i+p0,p1);
+				break;
+			default:
+				v.type = a[j];
+		}
+		b.variable_values.push(v);
+	}
+
+	var tokens_end = i+b.stmcur;
+	var listing = [];
+	for (var j = tokens_begin; j < tokens_end;) {
+		var s = {tok:[]};
+		s.lineno = le16(a,j);
+		var len = a[j+2];
+
+		var line = s.lineno + " ";
+
+		// Parse statements
+		var k = 3;
+		while (k < len) {
+			var end = a[j+k];
+			var cmd = a[j+k+1];
+			k += 2;
+			s.tok.push(_basic_commands[cmd]);
+
+			if (cmd != 0x36)	// slient LET
+			line += _basic_commands[cmd] + " ";
+
+			if (cmd < 2) {	// REM,DATA
+				var txt = '';
+				while (k < end)
+					txt += String.fromCharCode(a[j+k++]);
+				s.tok.push(txt);
+				line += txt;
+				k = end;
+			}
+
+			while (k < end) {
+				var op = a[j+k++];
+				switch (op) {
+					case 0x0F: // SCONST
+						var txt = '';
+						var blen = a[j+k++];
+						while (blen--) {
+							c = a[j+k++];
+							if (c == 0x9B)
+								break;
+							txt += String.fromCharCode(c);
+						}
+						s.tok.push(txt);
+						line += '"' + txt + '"';
+						break;
+					case 0x0E: // NCONST
+						var n = bcd(a,j+k);
+						s.tok.push(n);
+						k += 6;
+						line += n;
+						break;
+					case 0x16: // EOL
+						k = end;
+						break;
+					default: {
+						if (op & 0x80)
+							op = b.variable_names[op&0x7F];
+						else
+							op = _basic_operators[op];
+						line += op;
+						s.tok.push(op);
+					}
+				}
+			}
+		}
+		b.statements.push(s);
+		listing.push(line);
+		j += len;
+	}
+	return esc(listing.join("\n")) + "\n" + JSON.stringify(b,0,2);
+}
+
+//===================================================================================================
+//===================================================================================================
+
+function le16(a,i)
+{
+	return a[i] | ((a[i+1]) << 8);
+}
+
+function toAscii(a,i,len)
+{
+	var s = '';
+	while (len--)
+		s += String.fromCharCode(a[i++]);
+	return s;
+}
+
+function err(e)
+{
+	_m("#err","#toc",{err:e});
+}
+
+function isBAS(n)
+{
+	return (n.indexOf(".BAS") != -1) || (n.indexOf(".bas") != -1);
+}
+var _files = [];
+function show(start)
+{
+	var f = _files[start];
+	var atr = f.atr;
+	var a = atr.data;
+	var i = atr.sector_offset(f.start);
+	var len = f.total * atr.sector_size;
+
+	var a = f.read();
+
+	_m("#pre","#hex",{pre:hex_dump(a,0,a.length)});
+	var dissector = "";
+	if (isBAS(f.name))
+		dissector = ataribasic(a,0,a.length);
+	_m("#pre","#show",{pre:dissector});
+}
+
+function show_hex(a)
+{
+	_m("#pre","#hex",{pre:hex_dump(a,0,a.length)});
+}
+
+function show_bas(a)
+{
+	var d = ataribasic(a,0,a.length);
+	_m("#pre","#show",{pre:d});
+	show_hex(a);
+}
+
+function show_lst(a)
+{
+	var s = '';
+	for (var i = 0; i < a.length; i++)
+	{
+		if (a[i] != 0x9B)
+			s += escapestr(String.fromCharCode(a[i] & 0x7F));
+		else
+			s += '\n';
+	}
+	_m("#pre","#show",{pre:s});
+}
+
+function file_read()
+{
+	var data = new Uint8Array(this.total*125); // TODO
+	var j = 0;
+	var count = this.total;
+	var sector = this.start;
+	var a = this.atr.data;
+	while (count--) {
+		var i = this.atr.sector_offset(sector);
+		var len = a[i+127];
+		for (var k = 0; k < 125; k++)
+			data[j++] = a[i + k];
+		var num = a[i+125] >> 2;
+		if (num != this.number)
+			return null;
+		var next = ((a[i+125] & 0x3) << 8) | (a[i+126]);
+		sector = next-1;
+	}
+	if (data.length == j)
+		return data;
+	return new Uint8Array(data,j);
+}
+
+function load_data(name,a)
+{
+	// header is 16 bytes
+	// http://www.atarimax.com/jindroush.atari.org/afmtatr.html
+	var atr = {data:a,name:name}
+	var sig = le16(a,0);
+	console.log(hex(sig,4));
+	if (sig != 0x296) {
+		if (isBAS(name))
+			return show_bas(a);
+		if (name.indexOf(".LST") != -1)
+			return show_lst(a);
+		return show_hex(a);
+		return err(name + " is not a ATR file");
+	}
+	atr.size = le16(a,2) << 4;
+	atr.sector_size = le16(a,4);
+	atr.size += a[6] << 16;
+	atr.sector_offset = function(n)
+	{
+		if (n <= 3)
+			return 16 + n*0x80;
+		return 16 + 3*0x80 + (n-3)*this.sector_size;
+	}
+
+	//	dump contents
+	//	http://atari.kensclassics.org/dos.htm
+	var files = [];
+	for (var s = 360; s < 368; s++) {
+		var i = atr.sector_offset(s);
+		for (var e = 0; e < atr.sector_size/16; e++) {
+			var f = {atr:atr,flags:a[i],total:le16(a,i+1),start:le16(a,i+3)-1};
+			f.number = e;
+			f.read = file_read;
+			if (f.flags & 0x40) {
+				f.name = toAscii(a,i+5,8).trim() + "." + toAscii(a,i+13,3).trim();
+				files.push(f);
+				_files[f.start] = f;
+			}
+			i += 16;
+		}
+	};
+	atr.toc = repeat("#file",files);
+	_m("#hdr","#toc",atr);
+}
+//===================================================================================================
+//===================================================================================================
+
+function load()
+{
+    drop_init(_q("body"),function(file,ab) {
+    	load_data(file.name,new Uint8Array(ab));
+    });
+}
+
+</script>
+
+<body>
+<h2>ATR dump</h2>
+Atari Atr Disk formats
+<br/>
+<div id="toc"></div>
+<div id="show"></div>
+<div id="hex"></div>
+<br/>
+
+<script type="text/javascript">
+
+//===================================================================================================
+//===================================================================================================
+// 	Big inline test image
+//	formatted like this to avoid killing editors and to get around same origin restrictions
+
+</script>
+<script>load()</script>
+</body>
+</html>
