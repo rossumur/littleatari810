@@ -1,4 +1,2 @@
-cl65 -t atari -I ../include/ -T -l -vm --mapfile app.map app.c -o app.xex --start-addr $705
-BootableXEX app.xex
-BootableXEX -t app.xex
-ls -l app.xex app.atr app_test.atr
+../bin/cl65 -Wl -D__SYSTEM_CHECK__=1 -t atari -O -I ../include --start-addr 0x0705 app.c -o app.xex
+makerur app.xex
